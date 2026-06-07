@@ -25,6 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -46,7 +47,7 @@ type WebAppReconciler struct {
 func (r *WebAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := logf.FromContext(ctx)
 
-	// Fetch the WebApp instance
+	// Fetch the webapp CR
 	app := &appsv1.WebApp{}
 	err := r.Get(ctx, req.NamespacedName, app)
 	if err != nil {
@@ -58,61 +59,69 @@ func (r *WebAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 
-	// Fetch the standard Kubernetes Deployment
-	found := &k8sappsv1.Deployment{}
-	err = r.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, found)
+	// Deployment Reconcilation
+	foundDep := &k8sappsv1.Deployment{}
+	err = r.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, foundDep)
 
-	// CREATE PATH: If the deployment doesn't exist, create it
 	if err != nil && apierrors.IsNotFound(err) {
+		// Create Deployment
 		dep, err := r.deploymentForWebApp(app)
 		if err != nil {
 			logger.Error(err, "Failed to define a new Deployment resource")
 			return ctrl.Result{}, err
 		}
-
-		logger.Info("Creating a new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
+		logger.Info("Creating a new Deployment", "Namespace", dep.Namespace, "Name", dep.Name)
 		if err := r.Create(ctx, dep); err != nil {
-			logger.Error(err, "Failed to create new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
 			return ctrl.Result{}, err
 		}
-		// Deployment created successfully - return and requeue
 		return ctrl.Result{Requeue: true}, nil
 
 	} else if err != nil {
-		logger.Error(err, "Failed to get Deployment")
 		return ctrl.Result{}, err
 	}
 
-	// UPDATE PATH (DRIFT DETECTION): The deployment exists, let's check if it matches our desired state
+	// Deployment Drift Detection
 	desiredReplicas := app.Spec.Replicas
 	desiredImage := app.Spec.Image
-	actualImage := found.Spec.Template.Spec.Containers[0].Image
+	actualImage := foundDep.Spec.Template.Spec.Containers[0].Image
 
-	// Compare actual state vs desired state
-	if *found.Spec.Replicas != desiredReplicas || actualImage != desiredImage {
-		logger.Info("Drift detected! Updating Deployment",
-			"Desired Replicas", desiredReplicas, "Actual Replicas", *found.Spec.Replicas,
-			"Desired Image", desiredImage, "Actual Image", actualImage)
+	if *foundDep.Spec.Replicas != desiredReplicas || actualImage != desiredImage {
+		logger.Info("Drift detected! Updating Deployment", "Desired Replicas", desiredReplicas, "Actual Replicas", *foundDep.Spec.Replicas)
+		foundDep.Spec.Replicas = &desiredReplicas
+		foundDep.Spec.Template.Spec.Containers[0].Image = desiredImage
 
-		// Overwrite the local memory with the desired values
-		found.Spec.Replicas = &desiredReplicas
-		found.Spec.Template.Spec.Containers[0].Image = desiredImage
-
-		// Push the update to the Kubernetes API
-		if err = r.Update(ctx, found); err != nil {
-			logger.Error(err, "Failed to update Deployment", "Deployment.Namespace", found.Namespace, "Deployment.Name", found.Name)
+		if err = r.Update(ctx, foundDep); err != nil {
 			return ctrl.Result{}, err
 		}
-
-		// Update successful - return and requeue
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// SUCCESS: If we reach this point, the deployment exists and perfectly matches our desired state.
+	// Service Reconcilation
+	foundSvc := &corev1.Service{}
+	err = r.Get(ctx, types.NamespacedName{Name: app.Name + "-service", Namespace: app.Namespace}, foundSvc)
+
+	if err != nil && apierrors.IsNotFound(err) {
+		// Create Service
+		svc, err := r.serviceForWebApp(app)
+		if err != nil {
+			logger.Error(err, "Failed to define a new Service resource")
+			return ctrl.Result{}, err
+		}
+		logger.Info("Creating a new Service", "Namespace", svc.Namespace, "Name", svc.Name)
+		if err := r.Create(ctx, svc); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
+
+	} else if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// SUCCESS: Deployment and Service both exist and are healthy
 	return ctrl.Result{}, nil
 }
 
-// deploymentForWebApp returns a standard Kubernetes Deployment object based on our WebApp specs
+// Custom Helper Funcitons
 func (r *WebAppReconciler) deploymentForWebApp(app *appsv1.WebApp) (*k8sappsv1.Deployment, error) {
 	ls := map[string]string{"app": app.Name}
 	replicas := app.Spec.Replicas
@@ -124,13 +133,9 @@ func (r *WebAppReconciler) deploymentForWebApp(app *appsv1.WebApp) (*k8sappsv1.D
 		},
 		Spec: k8sappsv1.DeploymentSpec{
 			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{
-				MatchLabels: ls,
-			},
+			Selector: &metav1.LabelSelector{MatchLabels: ls},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: ls,
-				},
+				ObjectMeta: metav1.ObjectMeta{Labels: ls},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
 						Image: app.Spec.Image,
@@ -151,9 +156,35 @@ func (r *WebAppReconciler) deploymentForWebApp(app *appsv1.WebApp) (*k8sappsv1.D
 	return dep, nil
 }
 
+func (r *WebAppReconciler) serviceForWebApp(app *appsv1.WebApp) (*corev1.Service, error) {
+	ls := map[string]string{"app": app.Name}
+
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      app.Name + "-service",
+			Namespace: app.Namespace,
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: ls,
+			Type:     corev1.ServiceTypeNodePort, // Opens a port on Minikube
+			Ports: []corev1.ServicePort{{
+				Protocol:   corev1.ProtocolTCP,
+				Port:       80,
+				TargetPort: intstr.FromInt(80),
+			}},
+		},
+	}
+
+	if err := ctrl.SetControllerReference(app, svc, r.Scheme); err != nil {
+		return nil, err
+	}
+	return svc, nil
+}
+
 func (r *WebAppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&appsv1.WebApp{}).
-		Named("webapp").
+		Owns(&k8sappsv1.Deployment{}). // Tells the manager to watch the Deployments we own
+		Owns(&corev1.Service{}).       // Tells the manager to watch the Services we own
 		Complete(r)
 }
