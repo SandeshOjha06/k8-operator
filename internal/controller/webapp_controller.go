@@ -46,6 +46,7 @@ type WebAppReconciler struct {
 func (r *WebAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := logf.FromContext(ctx)
 
+	// Fetch the WebApp instance
 	app := &appsv1.WebApp{}
 	err := r.Get(ctx, req.NamespacedName, app)
 	if err != nil {
@@ -57,42 +58,65 @@ func (r *WebAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 
+	// Fetch the standard Kubernetes Deployment
 	found := &k8sappsv1.Deployment{}
 	err = r.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, found)
 
+	// CREATE PATH: If the deployment doesn't exist, create it
 	if err != nil && apierrors.IsNotFound(err) {
-		// define a new deployment
 		dep, err := r.deploymentForWebApp(app)
 		if err != nil {
 			logger.Error(err, "Failed to define a new Deployment resource")
 			return ctrl.Result{}, err
 		}
 
-		// send the creation request to the K8s API
+		logger.Info("Creating a new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
 		if err := r.Create(ctx, dep); err != nil {
 			logger.Error(err, "Failed to create new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
 			return ctrl.Result{}, err
 		}
+		// Deployment created successfully - return and requeue
 		return ctrl.Result{Requeue: true}, nil
+
 	} else if err != nil {
-		// cluster api is broken or connection lost
 		logger.Error(err, "Failed to get Deployment")
 		return ctrl.Result{}, err
 	}
 
-	// Success! The deployment exists and no errors occurred.
+	// UPDATE PATH (DRIFT DETECTION): The deployment exists, let's check if it matches our desired state
+	desiredReplicas := app.Spec.Replicas
+	desiredImage := app.Spec.Image
+	actualImage := found.Spec.Template.Spec.Containers[0].Image
+
+	// Compare actual state vs desired state
+	if *found.Spec.Replicas != desiredReplicas || actualImage != desiredImage {
+		logger.Info("Drift detected! Updating Deployment",
+			"Desired Replicas", desiredReplicas, "Actual Replicas", *found.Spec.Replicas,
+			"Desired Image", desiredImage, "Actual Image", actualImage)
+
+		// Overwrite the local memory with the desired values
+		found.Spec.Replicas = &desiredReplicas
+		found.Spec.Template.Spec.Containers[0].Image = desiredImage
+
+		// Push the update to the Kubernetes API
+		if err = r.Update(ctx, found); err != nil {
+			logger.Error(err, "Failed to update Deployment", "Deployment.Namespace", found.Namespace, "Deployment.Name", found.Name)
+			return ctrl.Result{}, err
+		}
+
+		// Update successful - return and requeue
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	// SUCCESS: If we reach this point, the deployment exists and perfectly matches our desired state.
 	return ctrl.Result{}, nil
 }
 
 // deploymentForWebApp returns a standard Kubernetes Deployment object based on our WebApp specs
 func (r *WebAppReconciler) deploymentForWebApp(app *appsv1.WebApp) (*k8sappsv1.Deployment, error) {
-	// defining so kubernetes knows these pods belong to this WebApp
 	ls := map[string]string{"app": app.Name}
-
-	// grab replicas from CR
 	replicas := app.Spec.Replicas
 
-	// kubernetes deployment struct
 	dep := &k8sappsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      app.Name,
@@ -109,7 +133,7 @@ func (r *WebAppReconciler) deploymentForWebApp(app *appsv1.WebApp) (*k8sappsv1.D
 				},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
-						Image: app.Spec.Image, // Grabbing the image from your custom CR
+						Image: app.Spec.Image,
 						Name:  "webapp-container",
 						Ports: []corev1.ContainerPort{{
 							ContainerPort: 80,
@@ -121,7 +145,6 @@ func (r *WebAppReconciler) deploymentForWebApp(app *appsv1.WebApp) (*k8sappsv1.D
 		},
 	}
 
-	// set owner reference
 	if err := ctrl.SetControllerReference(app, dep, r.Scheme); err != nil {
 		return nil, err
 	}
