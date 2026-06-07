@@ -19,8 +19,12 @@ package controller
 import (
 	"context"
 
+	k8sappsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -53,7 +57,75 @@ func (r *WebAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 
+	found := &k8sappsv1.Deployment{}
+	err = r.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, found)
+
+	if err != nil && apierrors.IsNotFound(err) {
+		// define a new deployment
+		dep, err := r.deploymentForWebApp(app)
+		if err != nil {
+			logger.Error(err, "Failed to define a new Deployment resource")
+			return ctrl.Result{}, err
+		}
+
+		// send the creation request to the K8s API
+		if err := r.Create(ctx, dep); err != nil {
+			logger.Error(err, "Failed to create new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
+	} else if err != nil {
+		// cluster api is broken or connection lost
+		logger.Error(err, "Failed to get Deployment")
+		return ctrl.Result{}, err
+	}
+
+	// Success! The deployment exists and no errors occurred.
 	return ctrl.Result{}, nil
+}
+
+// deploymentForWebApp returns a standard Kubernetes Deployment object based on our WebApp specs
+func (r *WebAppReconciler) deploymentForWebApp(app *appsv1.WebApp) (*k8sappsv1.Deployment, error) {
+	// defining so kubernetes knows these pods belong to this WebApp
+	ls := map[string]string{"app": app.Name}
+
+	// grab replicas from CR
+	replicas := app.Spec.Replicas
+
+	// kubernetes deployment struct
+	dep := &k8sappsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      app.Name,
+			Namespace: app.Namespace,
+		},
+		Spec: k8sappsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: ls,
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: ls,
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Image: app.Spec.Image, // Grabbing the image from your custom CR
+						Name:  "webapp-container",
+						Ports: []corev1.ContainerPort{{
+							ContainerPort: 80,
+							Name:          "http",
+						}},
+					}},
+				},
+			},
+		},
+	}
+
+	// set owner reference
+	if err := ctrl.SetControllerReference(app, dep, r.Scheme); err != nil {
+		return nil, err
+	}
+	return dep, nil
 }
 
 func (r *WebAppReconciler) SetupWithManager(mgr ctrl.Manager) error {
