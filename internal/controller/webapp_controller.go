@@ -117,7 +117,29 @@ func (r *WebAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 
-	// SUCCESS: Deployment and Service both exist and are healthy
+	// Status Reconcilation
+
+	// Read the actual healthy pod count from the native K8s Deployment
+	available := foundDep.Status.AvailableReplicas
+
+	// Update our WebApp's internal memory struct
+	app.Status.AvailableReplicas = available
+
+	// Determine the Phase based on the math
+	if available == app.Spec.Replicas {
+		app.Status.Phase = appsv1.PhaseReconciled
+	} else {
+		// If they don't match, K8s is still working on spinning them up or down
+		app.Status.Phase = appsv1.PhaseReconciling
+	}
+
+	// Push the Status update back to the Kubernetes API
+	if err := r.Status().Update(ctx, app); err != nil {
+		logger.Error(err, "Failed to update WebApp status")
+		return ctrl.Result{}, err
+	}
+
+	// SUCCESS
 	return ctrl.Result{}, nil
 }
 
