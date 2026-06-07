@@ -1,8 +1,5 @@
 # webapp-operator
-// TODO(user): Add simple overview of use/purpose
-
-## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+The WebApp Operator is a custom Kubernetes controller that manages the entire lifecycle of web applications within a cluster. When a user defines a custom WebApp resource, the operator automatically provisions the underlying Kubernetes native objects required to run it—specifically, a Deployment for compute and a NodePort Service for networking. Beyond initial creation, it actively acts as a control plane by continuously monitoring the cluster for configuration drift, instantly reverting any unauthorized manual changes made to the running application back to the desired state defined in the custom resource.
 
 ## Getting Started
 
