@@ -59,7 +59,7 @@ func (r *WebAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 
-	// Deployment Reconcilation
+	// Deployment Reconciliation
 	foundDep := &k8sappsv1.Deployment{}
 	err = r.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, foundDep)
 
@@ -96,7 +96,7 @@ func (r *WebAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Service Reconcilation
+	// Service Reconciliation
 	foundSvc := &corev1.Service{}
 	err = r.Get(ctx, types.NamespacedName{Name: app.Name + "-service", Namespace: app.Namespace}, foundSvc)
 
@@ -117,7 +117,7 @@ func (r *WebAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 
-	// Status Reconcilation
+	// Status Reconciliation
 
 	// Read the actual healthy pod count from the native K8s Deployment
 	available := foundDep.Status.AvailableReplicas
@@ -143,7 +143,7 @@ func (r *WebAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	return ctrl.Result{}, nil
 }
 
-// Custom Helper Funcitons
+// Custom Helper Functions
 func (r *WebAppReconciler) deploymentForWebApp(app *appsv1.WebApp) (*k8sappsv1.Deployment, error) {
 	ls := map[string]string{"app": app.Name}
 	replicas := app.Spec.Replicas
