@@ -1,7 +1,10 @@
 apiVersion: apps.sandesh.dev/v1
 kind: WebApp
 metadata:
+  labels:
+    app.kubernetes.io/name: webapp-operator
+    app.kubernetes.io/managed-by: kustomize
   name: webapp-sample
 spec:
-  image: nginx:latest
-  replicas: 2
+  replicas: 3
+  image: nginx:1.25-alpine
