@@ -53,11 +53,9 @@ var _ = Describe("WebApp Controller", func() {
 					},
 					// TODO(user): Specify other spec details if needed.
 					Spec: appsv1.WebAppSpec{
-					Replicas : 3,
-					Image : "nginx:1.25-alpine",
-
+						Replicas: 3,
+						Image:    "nginx:1.25-alpine",
 					},
-					
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
